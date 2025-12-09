@@ -1,232 +1,799 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistema Legal - Inicio de Sesión</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+from flask import Flask, render_template, request, jsonify, session, send_file, redirect, url_for
+from werkzeug.utils import secure_filename
+import os
+import json
+import secrets
+import time
+from functools import wraps
+from datetime import timedelta
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
+# Importar módulos existentes
+from sign.digital_signer import DigitalSigner
+from sign.signature_verifier import SignatureVerifier
+from sign.key_generator import KeyGenerator
+from cipher.Cifrado_doc import DocumentEncryptor
+from cipher.Descifrado_doc import DocumentDecryptor
+from cipher.cifradollave import KeyEncryptor
+from cipher.decifradollave import KeyDecryptor
 
-        .login-container {
-            background: white;
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            width: 100%;
-            max-width: 400px;
-        }
+# Importar criptografía para generación directa
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
+# Obtener directorio base del proyecto
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-        .logo h1 {
-            color: #667eea;
-            font-size: 28px;
-            margin-bottom: 5px;
-        }
+app = Flask(__name__)
+app.secret_key = secrets.token_hex(32)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
+app.config['KEYS_FOLDER'] = os.path.join(BASE_DIR, 'keys')
+app.config['DOCUMENTS_FOLDER'] = os.path.join(BASE_DIR, 'documents')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
-        .logo p {
-            color: #666;
-            font-size: 14px;
-        }
+# Crear directorios necesarios con rutas absolutas
+FOLDERS = {
+    'uploads': os.path.join(BASE_DIR, 'uploads'),
+    'keys': os.path.join(BASE_DIR, 'keys'),
+    'documents': os.path.join(BASE_DIR, 'documents'),
+    'signatures': os.path.join(BASE_DIR, 'signatures')
+}
 
-        .form-group {
-            margin-bottom: 20px;
-        }
+for folder_name, folder_path in FOLDERS.items():
+    os.makedirs(folder_path, exist_ok=True)
+    print(f"✓ Directorio creado/verificado: {folder_path}")
 
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-        }
+# Configuración de equipos y usuarios
+TEAMS_CONFIG = {
+    "Pensión alimenticia": {
+        "abogado": {"username": "Boloñesa", "password": "avril789", "role": "abogado"},
+        "clientes": [
+            {"username": "Ramírez", "password": "mar789", "role": "cliente"},
+            {"username": "Hidalgo", "password": "daniel789", "role": "cliente"}
+        ],
+        "otro": {"username": "admin", "password": "admin", "role": "otro"}
+    },
+    "Divorcio": {
+        "abogado": {"username": "Cruz", "password": "daniel456", "role": "abogado"},
+        "clientes": [
+            {"username": "Pérez", "password": "mar456", "role": "cliente"},
+            {"username": "Perejil", "password": "avril456", "role": "cliente"}
+        ],
+        "otro": {"username": "admin", "password": "admin", "role": "otro"}
+    },
+    "Asunto hipotecario": {
+        "abogado": {"username": "Castro", "password": "mar123", "role": "abogado"},
+        "clientes": [
+            {"username": "Mejía", "password": "avril123", "role": "cliente"}
+        ],
+        "otro": {"username": "Estrada", "password": "daniel123", "role": "otro"}
+    }
+}
 
-        .form-group input {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 15px;
-            transition: border-color 0.3s;
-        }
-
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .btn-login {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-
-        .btn-login:hover {
-            transform: translateY(-2px);
-        }
-
-        .btn-login:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .alert {
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: none;
-        }
-
-        .alert-error {
-            background-color: #fee;
-            color: #c33;
-            border: 1px solid #fcc;
-        }
-
-        .alert-success {
-            background-color: #efe;
-            color: #3c3;
-            border: 1px solid #cfc;
-        }
-
-        .users-hint {
-            margin-top: 25px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            font-size: 13px;
-        }
-
-        .users-hint h4 {
-            color: #667eea;
-            margin-bottom: 10px;
-            font-size: 14px;
-        }
-
-        .users-hint ul {
-            list-style: none;
-            padding-left: 0;
-        }
-
-        .users-hint li {
-            padding: 5px 0;
-            color: #666;
-        }
-
-        .users-hint strong {
-            color: #333;
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="logo">
-            <h1>⚖️ Sistema Legal</h1>
-            <p>Gestión Segura de Documentos</p>
-        </div>
-
-        <div id="alert" class="alert"></div>
-
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="username">Usuario</label>
-                <input type="text" id="username" name="username" required>
-            </div>
-
-            <div class="form-group">
-                <label for="password">Contraseña</label>
-                <input type="password" id="password" name="password" required>
-            </div>
-
-            <button type="submit" class="btn-login" id="btnLogin">
-                Iniciar Sesión
-            </button>
-        </form>
-
-        <div class="users-hint">
-            <h4>👥 Usuarios de prueba:</h4>
-            <ul>
-                <li><strong>Pensión alimenticia:</strong> Boloñesa, Ramírez, Hidalgo, Mejía</li>
-                <li><strong>Divorcio:</strong> Cruz, Pérez, Perejil, Estrada</li>
-                <li><strong>Hipotecario:</strong> Castro, Pérez, Estrada</li>
-            </ul>
-        </div>
-    </div>
-
-    <script>
-        const loginForm = document.getElementById('loginForm');
-        const btnLogin = document.getElementById('btnLogin');
-        const alertDiv = document.getElementById('alert');
-
-        function showAlert(message, type) {
-            alertDiv.textContent = message;
-            alertDiv.className = `alert alert-${type}`;
-            alertDiv.style.display = 'block';
-            
-            setTimeout(() => {
-                alertDiv.style.display = 'none';
-            }, 5000);
-        }
-
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-
-            btnLogin.disabled = true;
-            btnLogin.textContent = 'Iniciando sesión...';
-
-            try {
-                const response = await fetch('/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    showAlert('✅ Inicio de sesión exitoso', 'success');
-                    setTimeout(() => {
-                        window.location.href = '/dashboard';
-                    }, 1000);
-                } else {
-                    showAlert('❌ ' + (data.error || 'Error al iniciar sesión'), 'error');
-                    btnLogin.disabled = false;
-                    btnLogin.textContent = 'Iniciar Sesión';
-                }
-            } catch (error) {
-                showAlert('❌ Error de conexión con el servidor', 'error');
-                btnLogin.disabled = false;
-                btnLogin.textContent = 'Iniciar Sesión';
+# Crear índice de usuarios para login rápido
+USERS_INDEX = {}
+for team_name, team_data in TEAMS_CONFIG.items():
+    abogado = team_data["abogado"]
+    USERS_INDEX[abogado["username"]] = {
+        **abogado,
+        "team": team_name
+    }
+    
+    for cliente in team_data["clientes"]:
+        if cliente["username"] not in USERS_INDEX:
+            USERS_INDEX[cliente["username"]] = {
+                **cliente,
+                "team": team_name
             }
-        });
-    </script>
-</body>
-</html>
+        else:
+            # Usuario en múltiples equipos
+            if isinstance(USERS_INDEX[cliente["username"]]["team"], list):
+                USERS_INDEX[cliente["username"]]["team"].append(team_name)
+            else:
+                USERS_INDEX[cliente["username"]]["team"] = [
+                    USERS_INDEX[cliente["username"]]["team"],
+                    team_name
+                ]
+    
+    otro = team_data["otro"]
+    if otro["username"] not in USERS_INDEX:
+        USERS_INDEX[otro["username"]] = {
+            **otro,
+            "team": team_name
+        }
+    else:
+        if isinstance(USERS_INDEX[otro["username"]]["team"], list):
+            USERS_INDEX[otro["username"]]["team"].append(team_name)
+        else:
+            USERS_INDEX[otro["username"]]["team"] = [
+                USERS_INDEX[otro["username"]]["team"],
+                team_name
+            ]
+
+# Decorador para requerir login
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session:
+            return jsonify({'success': False, 'error': 'Sesión no iniciada'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+# Función auxiliar para obtener instancias del usuario
+def get_user_instances(username):
+    """Obtiene las instancias de KeyGenerator, Signer, etc. para el usuario"""
+    key_gen = KeyGenerator(username)
+    keys_dir = app.config['KEYS_FOLDER']
+    
+    # Cargar llave privada del usuario directamente
+    private_key_path = os.path.join(keys_dir, f"private_key_{username}.pem")
+    if os.path.exists(private_key_path):
+        try:
+            with open(private_key_path, 'rb') as f:
+                private_pem = f.read()
+            
+            key_gen.private_key = serialization.load_pem_private_key(
+                private_pem,
+                password=None,
+                backend=default_backend()
+            )
+            key_gen.public_key = key_gen.private_key.public_key()
+            print(f"✅ Llave privada cargada para: {username}")
+        except Exception as e:
+            print(f"❌ Error cargando llave privada de {username}: {e}")
+    
+    # Cargar llaves públicas del equipo
+    team_keys_file = os.path.join(keys_dir, f"team_{session.get('current_team', '')}_public_keys.json")
+    if os.path.exists(team_keys_file):
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            
+            # Cargar cada llave pública del equipo
+            for member_id, key_pem in team_data.get('team_public_keys', {}).items():
+                try:
+                    public_key = serialization.load_pem_public_key(
+                        key_pem.encode('utf-8'),
+                        backend=default_backend()
+                    )
+                    key_gen.team_public_keys[member_id] = public_key
+                except Exception as e:
+                    print(f"Error cargando llave pública de {member_id}: {e}")
+            
+            print(f"✅ Llaves del equipo cargadas: {list(key_gen.team_public_keys.keys())}")
+        except Exception as e:
+            print(f"❌ Error cargando llaves del equipo: {e}")
+    
+    signer = DigitalSigner(key_gen)
+    verifier = SignatureVerifier(key_gen)
+    encryptor = DocumentEncryptor()
+    decryptor = DocumentDecryptor()
+    key_encryptor = KeyEncryptor()
+    key_decryptor = KeyDecryptor()
+    
+    return {
+        'key_gen': key_gen,
+        'signer': signer,
+        'verifier': verifier,
+        'encryptor': encryptor,
+        'decryptor': decryptor,
+        'key_encryptor': key_encryptor,
+        'key_decryptor': key_decryptor
+    }
+
+# ============= RUTAS DE AUTENTICACIÓN =============
+
+@app.route('/')
+def index():
+    if 'username' in session:
+        return redirect(url_for('dashboard'))
+    return render_template('login.html')
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if username in USERS_INDEX and USERS_INDEX[username]['password'] == password:
+        user_data = USERS_INDEX[username]
+        session.permanent = True
+        session['username'] = username
+        session['role'] = user_data['role']
+        
+        # Manejar usuarios en múltiples equipos
+        if isinstance(user_data['team'], list):
+            session['teams'] = user_data['team']
+            session['current_team'] = user_data['team'][0]  # Default al primer equipo
+        else:
+            session['current_team'] = user_data['team']
+            session['teams'] = [user_data['team']]
+        
+        return jsonify({
+            'success': True,
+            'username': username,
+            'role': user_data['role'],
+            'team': session['current_team'],
+            'teams': session['teams']
+        })
+    
+    return jsonify({'success': False, 'error': 'Credenciales inválidas'}), 401
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'success': True})
+
+@app.route('/switch_team', methods=['POST'])
+@login_required
+def switch_team():
+    data = request.get_json()
+    new_team = data.get('team')
+    
+    if new_team in session.get('teams', []):
+        session['current_team'] = new_team
+        return jsonify({'success': True, 'team': new_team})
+    
+    return jsonify({'success': False, 'error': 'Equipo no autorizado'}), 403
+
+# ============= DASHBOARD =============
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/api/user_info')
+@login_required
+def user_info():
+    team_members = get_team_members(session['current_team'])
+    
+    # Verificar si el usuario tiene llaves generadas
+    keys_dir = app.config['KEYS_FOLDER']
+    private_key_path = os.path.join(keys_dir, f"private_key_{session['username']}.pem")
+    private_key_exists = os.path.exists(private_key_path)
+    
+    # Verificar también si la llave está registrada en el equipo
+    team_keys_file = os.path.join(keys_dir, f"team_{session['current_team']}_public_keys.json")
+    in_team_file = False
+    if os.path.exists(team_keys_file):
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            in_team_file = session['username'] in team_data.get('team_public_keys', {})
+        except:
+            pass
+    
+    has_keys = private_key_exists and in_team_file
+    
+    return jsonify({
+        'username': session['username'],
+        'role': session['role'],
+        'team': session['current_team'],
+        'teams': session.get('teams', [session['current_team']]),
+        'team_members': team_members,
+        'has_keys': has_keys,
+        'private_key_exists': private_key_exists,
+        'in_team_file': in_team_file
+    })
+
+def get_team_members(team_name):
+    """Obtiene lista de miembros del equipo"""
+    if team_name not in TEAMS_CONFIG:
+        return []
+    
+    team_data = TEAMS_CONFIG[team_name]
+    members = [team_data["abogado"]["username"]]
+    members.extend([c["username"] for c in team_data["clientes"]])
+    members.append(team_data["otro"]["username"])
+    
+    return list(set(members))  # Eliminar duplicados
+
+# ============= GESTIÓN DE LLAVES =============
+
+@app.route('/api/keys/generate', methods=['POST'])
+@login_required
+def generate_keys():
+    username = session['username']
+    keys_dir = app.config['KEYS_FOLDER']
+    
+    try:
+        # Crear instancia de KeyGenerator sin cambiar de directorio
+        key_gen = KeyGenerator(username)
+        
+        # Definir rutas completas
+        private_file = os.path.join(keys_dir, f"private_key_{username}.pem")
+        public_file = os.path.join(keys_dir, f"public_key_{username}.pem")
+        team_keys_file = os.path.join(keys_dir, f"team_{session['current_team']}_public_keys.json")
+        
+        # Generar llaves RSA
+        key_gen.private_key = key_gen.private_key or rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        key_gen.public_key = key_gen.private_key.public_key()
+        
+        # Guardar llave privada
+        private_pem = key_gen.private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        with open(private_file, 'wb') as f:
+            f.write(private_pem)
+        
+        # Guardar llave pública
+        public_pem = key_gen.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        with open(public_file, 'wb') as f:
+            f.write(public_pem)
+        
+        public_key_pem = public_pem.decode('utf-8')
+        
+        # Cargar llaves del equipo existentes
+        team_keys_data = {'team_public_keys': {}}
+        if os.path.exists(team_keys_file):
+            try:
+                with open(team_keys_file, 'r') as f:
+                    team_keys_data = json.load(f)
+            except:
+                pass
+        
+        # Agregar/actualizar llave pública del usuario actual
+        team_keys_data['team_public_keys'][username] = public_key_pem
+        team_keys_data['timestamp'] = time.time()
+        
+        # Guardar archivo del equipo actualizado
+        with open(team_keys_file, 'w') as f:
+            json.dump(team_keys_data, f, indent=2)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Llaves generadas exitosamente',
+            'public_key': public_key_pem
+        })
+        
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error generando llaves: {error_detail}")
+        return jsonify({
+            'success': False, 
+            'error': f'Error al generar llaves: {str(e)}'
+        }), 500
+
+@app.route('/api/keys/download_private', methods=['GET'])
+@login_required
+def download_private_key():
+    username = session['username']
+    keys_dir = app.config['KEYS_FOLDER']
+    filepath = os.path.join(keys_dir, f"private_key_{username}.pem")
+    
+    if os.path.exists(filepath):
+        return send_file(filepath, as_attachment=True, download_name=f"private_key_{username}.pem")
+    
+    return jsonify({'success': False, 'error': 'Llave no encontrada. Genera tus llaves primero.'}), 404
+
+@app.route('/api/keys/team_members', methods=['GET'])
+@login_required
+def get_team_keys():
+    team_name = session['current_team']
+    keys_dir = app.config['KEYS_FOLDER']
+    team_keys_file = os.path.join(keys_dir, f"team_{team_name}_public_keys.json")
+    
+    if os.path.exists(team_keys_file):
+        with open(team_keys_file, 'r') as f:
+            data = json.load(f)
+        
+        return jsonify({
+            'success': True,
+            'members': list(data.get('team_public_keys', {}).keys())
+        })
+    
+    return jsonify({'success': True, 'members': []})
+
+@app.route('/api/keys/diagnostic', methods=['GET'])
+@login_required
+def keys_diagnostic():
+    """Endpoint de diagnóstico para verificar estado de llaves"""
+    username = session['username']
+    team = session['current_team']
+    keys_dir = app.config['KEYS_FOLDER']
+    
+    # Verificar archivos individuales
+    private_key_path = os.path.join(keys_dir, f"private_key_{username}.pem")
+    public_key_path = os.path.join(keys_dir, f"public_key_{username}.pem")
+    team_keys_file = os.path.join(keys_dir, f"team_{team}_public_keys.json")
+    
+    diagnostic = {
+        'username': username,
+        'team': team,
+        'private_key_exists': os.path.exists(private_key_path),
+        'public_key_exists': os.path.exists(public_key_path),
+        'team_file_exists': os.path.exists(team_keys_file),
+        'team_members': [],
+        'in_team_file': False
+    }
+    
+    # Verificar contenido del archivo del equipo
+    if os.path.exists(team_keys_file):
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            diagnostic['team_members'] = list(team_data.get('team_public_keys', {}).keys())
+            diagnostic['in_team_file'] = username in team_data.get('team_public_keys', {})
+        except Exception as e:
+            diagnostic['team_file_error'] = str(e)
+    
+    # Intentar cargar llave privada
+    try:
+        instances = get_user_instances(username)
+        diagnostic['private_key_loaded'] = instances['key_gen'].private_key is not None
+        diagnostic['public_key_loaded'] = instances['key_gen'].public_key is not None
+        diagnostic['team_keys_loaded'] = len(instances['key_gen'].team_public_keys)
+    except Exception as e:
+        diagnostic['load_error'] = str(e)
+    
+    return jsonify(diagnostic)
+
+# ============= GESTIÓN DE DOCUMENTOS =============
+
+@app.route('/api/documents/upload', methods=['POST'])
+@login_required
+def upload_document():
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No se envió archivo'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'Nombre de archivo vacío'}), 400
+    
+    # Validar que sea PDF
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({'success': False, 'error': 'Solo se permiten archivos PDF'}), 400
+    
+    filename = secure_filename(file.filename)
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    os.makedirs(team_folder, exist_ok=True)
+    
+    filepath = os.path.join(team_folder, filename)
+    file.save(filepath)
+    
+    return jsonify({
+        'success': True,
+        'filename': filename,
+        'path': filepath
+    })
+
+@app.route('/api/documents/list', methods=['GET'])
+@login_required
+def list_documents():
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    
+    if not os.path.exists(team_folder):
+        return jsonify({'success': True, 'documents': []})
+    
+    documents = []
+    for filename in os.listdir(team_folder):
+        filepath = os.path.join(team_folder, filename)
+        
+        # Determinar tipo de documento
+        doc_type = 'unknown'
+        if filename.endswith('.pdf'):
+            doc_type = 'original'
+        elif filename.endswith('.enc'):
+            doc_type = 'encrypted'
+        elif filename.endswith('.key'):
+            doc_type = 'key'
+        elif filename.endswith('.json'):
+            doc_type = 'signature'
+        
+        documents.append({
+            'filename': filename,
+            'type': doc_type,
+            'size': os.path.getsize(filepath),
+            'path': filepath
+        })
+    
+    return jsonify({'success': True, 'documents': documents})
+
+@app.route('/api/documents/download/<path:filename>', methods=['GET'])
+@login_required
+def download_document(filename):
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    filepath = os.path.join(team_folder, secure_filename(filename))
+    
+    if os.path.exists(filepath):
+        return send_file(filepath, as_attachment=True, download_name=filename)
+    
+    return jsonify({'success': False, 'error': 'Documento no encontrado'}), 404
+
+# ============= CIFRADO DE DOCUMENTOS =============
+
+@app.route('/api/encrypt/generate_aes', methods=['POST'])
+@login_required
+def generate_aes_key():
+    """Genera llave AES y la devuelve en base64"""
+    instances = get_user_instances(session['username'])
+    encryptor = instances['encryptor']
+    
+    aes_key = encryptor.generar_clave_aes()
+    
+    return jsonify({
+        'success': True,
+        'aes_key': aes_key.decode('utf-8')
+    })
+
+@app.route('/api/encrypt/document', methods=['POST'])
+@login_required
+def encrypt_document():
+    data = request.get_json()
+    filename = data.get('filename')
+    aes_key_b64 = data.get('aes_key')
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    filepath = os.path.join(team_folder, secure_filename(filename))
+    
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'error': 'Documento no encontrado'}), 404
+    
+    instances = get_user_instances(session['username'])
+    encryptor = instances['encryptor']
+    
+    # Convertir llave de base64
+    aes_key = aes_key_b64.encode('utf-8')
+    
+    # Guardar llave temporalmente
+    key_file = os.path.join(team_folder, f"key_{filename}.key")
+    with open(key_file, 'wb') as f:
+        f.write(aes_key)
+    
+    # Cifrar documento
+    encrypted_file = os.path.join(team_folder, f"encrypted_{filename}.enc")
+    
+    if encryptor.cifrar_archivo(filepath, encrypted_file, aes_key):
+        return jsonify({
+            'success': True,
+            'encrypted_file': f"encrypted_{filename}.enc",
+            'key_file': f"key_{filename}.key"
+        })
+    
+    return jsonify({'success': False, 'error': 'Error al cifrar'}), 500
+
+@app.route('/api/encrypt/wrap_key', methods=['POST'])
+@login_required
+def wrap_aes_key():
+    """Cifra llave AES para un miembro del equipo"""
+    data = request.get_json()
+    key_filename = data.get('key_filename')
+    recipient = data.get('recipient')
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    keys_dir = app.config['KEYS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    
+    key_path = os.path.join(team_folder, secure_filename(key_filename))
+    recipient_public_key = os.path.join(keys_dir, f"public_key_{recipient}.pem")
+    
+    if not os.path.exists(key_path):
+        return jsonify({'success': False, 'error': 'Llave AES no encontrada'}), 404
+    
+    if not os.path.exists(recipient_public_key):
+        return jsonify({'success': False, 'error': f'Llave pública de {recipient} no encontrada'}), 404
+    
+    instances = get_user_instances(session['username'])
+    key_encryptor = instances['key_encryptor']
+    
+    result = key_encryptor.encrypt_aes_key_for_recipient(key_path, recipient_public_key)
+    
+    if result['success']:
+        # Mover archivo cifrado al equipo con nombre apropiado
+        wrapped_filename = f"wrapped_key_for_{recipient}.enc"
+        wrapped_path = os.path.join(team_folder, wrapped_filename)
+        
+        if os.path.exists(result['encrypted_file']):
+            os.rename(result['encrypted_file'], wrapped_path)
+        
+        return jsonify({
+            'success': True,
+            'wrapped_file': wrapped_filename,
+            'recipient': recipient
+        })
+    
+    return jsonify(result), 500
+
+@app.route('/api/decrypt/unwrap_key', methods=['POST'])
+@login_required
+def unwrap_aes_key():
+    """Descifra llave AES envuelta"""
+    data = request.get_json()
+    wrapped_filename = data.get('wrapped_filename')
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    keys_dir = app.config['KEYS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    
+    wrapped_path = os.path.join(team_folder, secure_filename(wrapped_filename))
+    my_private_key = os.path.join(keys_dir, f"private_key_{session['username']}.pem")
+    
+    if not os.path.exists(wrapped_path):
+        return jsonify({'success': False, 'error': 'Llave cifrada no encontrada'}), 404
+    
+    instances = get_user_instances(session['username'])
+    key_decryptor = instances['key_decryptor']
+    
+    result = key_decryptor.decrypt_aes_key_with_private(wrapped_path, my_private_key)
+    
+    if result['success']:
+        # Mover llave recuperada al equipo
+        recovered_filename = f"recovered_key_{session['username']}.key"
+        recovered_path = os.path.join(team_folder, recovered_filename)
+        
+        if os.path.exists(result['decrypted_file']):
+            os.rename(result['decrypted_file'], recovered_path)
+        
+        return jsonify({
+            'success': True,
+            'key_file': recovered_filename
+        })
+    
+    return jsonify(result), 500
+
+@app.route('/api/decrypt/document', methods=['POST'])
+@login_required
+def decrypt_document():
+    data = request.get_json()
+    encrypted_filename = data.get('encrypted_filename')
+    key_filename = data.get('key_filename')
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    
+    encrypted_path = os.path.join(team_folder, secure_filename(encrypted_filename))
+    key_path = os.path.join(team_folder, secure_filename(key_filename))
+    
+    if not os.path.exists(encrypted_path) or not os.path.exists(key_path):
+        return jsonify({'success': False, 'error': 'Archivos no encontrados'}), 404
+    
+    instances = get_user_instances(session['username'])
+    decryptor = instances['decryptor']
+    
+    result = decryptor.decrypt_with_keyfile(encrypted_path, key_path)
+    
+    if result['success']:
+        # Mover archivo descifrado al equipo
+        decrypted_filename = os.path.basename(result['decrypted_path'])
+        final_path = os.path.join(team_folder, decrypted_filename)
+        
+        if os.path.exists(result['decrypted_path']) and result['decrypted_path'] != final_path:
+            os.rename(result['decrypted_path'], final_path)
+        
+        return jsonify({
+            'success': True,
+            'decrypted_file': decrypted_filename
+        })
+    
+    return jsonify(result), 500
+
+# ============= FIRMAS DIGITALES =============
+
+@app.route('/api/sign/document', methods=['POST'])
+@login_required
+def sign_document():
+    data = request.get_json()
+    filename = data.get('filename')
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    filepath = os.path.join(team_folder, secure_filename(filename))
+    
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'error': 'Documento no encontrado'}), 404
+    
+    instances = get_user_instances(session['username'])
+    signer = instances['signer']
+    key_gen = instances['key_gen']
+    
+    # Verificar que la llave privada esté cargada
+    if not key_gen.private_key:
+        keys_dir = app.config['KEYS_FOLDER']
+        private_key_path = os.path.join(keys_dir, f"private_key_{session['username']}.pem")
+        
+        if not os.path.exists(private_key_path):
+            return jsonify({
+                'success': False, 
+                'error': 'Debes generar tus llaves primero. Ve a "Gestión de Llaves" y genera tu par de llaves RSA.'
+            }), 400
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Error cargando llave privada. Intenta generar nuevas llaves.'
+            }), 400
+    
+    try:
+        signature_package = signer.sign_document(filepath)
+        
+        # Guardar firma
+        sig_filename = f"firma_{session['username']}_{filename}.json"
+        sig_path = os.path.join(team_folder, sig_filename)
+        
+        with open(sig_path, 'w') as f:
+            json.dump(signature_package, f, indent=2)
+        
+        return jsonify({
+            'success': True,
+            'signature_file': sig_filename,
+            'document_hash': signature_package['document_hash']
+        })
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error firmando documento: {error_detail}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al firmar: {str(e)}'
+        }), 500
+
+@app.route('/api/verify/signature', methods=['POST'])
+@login_required
+def verify_signature():
+    data = request.get_json()
+    filename = data.get('filename')
+    signature_files = data.get('signature_files', [])
+    
+    docs_dir = app.config['DOCUMENTS_FOLDER']
+    team_folder = os.path.join(docs_dir, session['current_team'])
+    filepath = os.path.join(team_folder, secure_filename(filename))
+    
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'error': 'Documento no encontrado'}), 404
+    
+    instances = get_user_instances(session['username'])
+    verifier = instances['verifier']
+    
+    results = []
+    for sig_file in signature_files:
+        sig_path = os.path.join(team_folder, secure_filename(sig_file))
+        
+        if not os.path.exists(sig_path):
+            results.append({
+                'file': sig_file,
+                'valid': False,
+                'error': 'Archivo de firma no encontrado'
+            })
+            continue
+        
+        try:
+            with open(sig_path, 'r') as f:
+                signature_package = json.load(f)
+            
+            valid = verifier.verify_signature(signature_package, filepath)
+            
+            results.append({
+                'file': sig_file,
+                'user': signature_package.get('user_id'),
+                'valid': valid,
+                'hash': signature_package.get('document_hash')
+            })
+        except Exception as e:
+            results.append({
+                'file': sig_file,
+                'valid': False,
+                'error': str(e)
+            })
+    
+    return jsonify({
+        'success': True,
+        'results': results
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
