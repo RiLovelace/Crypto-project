@@ -3,6 +3,7 @@ from werkzeug.utils import secure_filename
 import os
 import json
 import secrets
+import time
 from functools import wraps
 from datetime import timedelta
 
@@ -15,8 +16,10 @@ from cipher.Descifrado_doc import DocumentDecryptor
 from cipher.cifradollave import KeyEncryptor
 from cipher.decifradollave import KeyDecryptor
 
-# Obtener directorio base del proyecto
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Importar criptografía para generación directa
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
@@ -25,6 +28,9 @@ app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
 app.config['KEYS_FOLDER'] = os.path.join(BASE_DIR, 'keys')
 app.config['DOCUMENTS_FOLDER'] = os.path.join(BASE_DIR, 'documents')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+# Obtener directorio base del proyecto
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Crear directorios necesarios con rutas absolutas
 FOLDERS = {
@@ -118,19 +124,46 @@ def login_required(f):
 def get_user_instances(username):
     """Obtiene las instancias de KeyGenerator, Signer, etc. para el usuario"""
     key_gen = KeyGenerator(username)
-    
-    # Configurar directorio de llaves
     keys_dir = app.config['KEYS_FOLDER']
     
-    # Cargar llave privada si existe
+    # Cargar llave privada del usuario directamente
     private_key_path = os.path.join(keys_dir, f"private_key_{username}.pem")
     if os.path.exists(private_key_path):
-        key_gen.load_private_key(username)
+        try:
+            with open(private_key_path, 'rb') as f:
+                private_pem = f.read()
+            
+            key_gen.private_key = serialization.load_pem_private_key(
+                private_pem,
+                password=None,
+                backend=default_backend()
+            )
+            key_gen.public_key = key_gen.private_key.public_key()
+            print(f"✅ Llave privada cargada para: {username}")
+        except Exception as e:
+            print(f"❌ Error cargando llave privada de {username}: {e}")
     
     # Cargar llaves públicas del equipo
     team_keys_file = os.path.join(keys_dir, f"team_{session.get('current_team', '')}_public_keys.json")
     if os.path.exists(team_keys_file):
-        key_gen.load_public_keys_from_file(team_keys_file)
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            
+            # Cargar cada llave pública del equipo
+            for member_id, key_pem in team_data.get('team_public_keys', {}).items():
+                try:
+                    public_key = serialization.load_pem_public_key(
+                        key_pem.encode('utf-8'),
+                        backend=default_backend()
+                    )
+                    key_gen.team_public_keys[member_id] = public_key
+                except Exception as e:
+                    print(f"Error cargando llave pública de {member_id}: {e}")
+            
+            print(f"✅ Llaves del equipo cargadas: {list(key_gen.team_public_keys.keys())}")
+        except Exception as e:
+            print(f"❌ Error cargando llaves del equipo: {e}")
     
     signer = DigitalSigner(key_gen)
     verifier = SignatureVerifier(key_gen)
@@ -218,7 +251,21 @@ def user_info():
     
     # Verificar si el usuario tiene llaves generadas
     keys_dir = app.config['KEYS_FOLDER']
-    private_key_exists = os.path.exists(os.path.join(keys_dir, f"private_key_{session['username']}.pem"))
+    private_key_path = os.path.join(keys_dir, f"private_key_{session['username']}.pem")
+    private_key_exists = os.path.exists(private_key_path)
+    
+    # Verificar también si la llave está registrada en el equipo
+    team_keys_file = os.path.join(keys_dir, f"team_{session['current_team']}_public_keys.json")
+    in_team_file = False
+    if os.path.exists(team_keys_file):
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            in_team_file = session['username'] in team_data.get('team_public_keys', {})
+        except:
+            pass
+    
+    has_keys = private_key_exists and in_team_file
     
     return jsonify({
         'username': session['username'],
@@ -226,7 +273,9 @@ def user_info():
         'team': session['current_team'],
         'teams': session.get('teams', [session['current_team']]),
         'team_members': team_members,
-        'has_keys': private_key_exists
+        'has_keys': has_keys,
+        'private_key_exists': private_key_exists,
+        'in_team_file': in_team_file
     })
 
 def get_team_members(team_name):
@@ -249,37 +298,73 @@ def generate_keys():
     username = session['username']
     keys_dir = app.config['KEYS_FOLDER']
     
-    # Cambiar temporalmente al directorio de llaves para que KeyGenerator guarde ahí
-    original_dir = os.getcwd()
-    os.chdir(keys_dir)
-    
     try:
-        instances = get_user_instances(username)
-        key_gen = instances['key_gen']
+        # Crear instancia de KeyGenerator sin cambiar de directorio
+        key_gen = KeyGenerator(username)
         
-        # Generar par de llaves
-        public_key_pem = key_gen.generate_key_pair()
+        # Definir rutas completas
+        private_file = os.path.join(keys_dir, f"private_key_{username}.pem")
+        public_file = os.path.join(keys_dir, f"public_key_{username}.pem")
+        team_keys_file = os.path.join(keys_dir, f"team_{session['current_team']}_public_keys.json")
         
-        # Verificar que los archivos se crearon
-        private_file = f"private_key_{username}.pem"
-        public_file = f"public_key_{username}.pem"
+        # Generar llaves RSA
+        key_gen.private_key = key_gen.private_key or rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        key_gen.public_key = key_gen.private_key.public_key()
         
-        if not os.path.exists(private_file) or not os.path.exists(public_file):
-            return jsonify({'success': False, 'error': 'Error al crear archivos de llaves'}), 500
+        # Guardar llave privada
+        private_pem = key_gen.private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        with open(private_file, 'wb') as f:
+            f.write(private_pem)
         
-        # Registrar llave pública en el equipo
-        team_keys_file = f"team_{session['current_team']}_public_keys.json"
-        key_gen.add_team_member_public_key(username, public_key_pem)
-        key_gen.save_public_keys_to_file(team_keys_file)
+        # Guardar llave pública
+        public_pem = key_gen.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        with open(public_file, 'wb') as f:
+            f.write(public_pem)
+        
+        public_key_pem = public_pem.decode('utf-8')
+        
+        # Cargar llaves del equipo existentes
+        team_keys_data = {'team_public_keys': {}}
+        if os.path.exists(team_keys_file):
+            try:
+                with open(team_keys_file, 'r') as f:
+                    team_keys_data = json.load(f)
+            except:
+                pass
+        
+        # Agregar/actualizar llave pública del usuario actual
+        team_keys_data['team_public_keys'][username] = public_key_pem
+        team_keys_data['timestamp'] = time.time()
+        
+        # Guardar archivo del equipo actualizado
+        with open(team_keys_file, 'w') as f:
+            json.dump(team_keys_data, f, indent=2)
         
         return jsonify({
             'success': True,
             'message': 'Llaves generadas exitosamente',
             'public_key': public_key_pem
         })
-    finally:
-        # Regresar al directorio original
-        os.chdir(original_dir)
+        
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error generando llaves: {error_detail}")
+        return jsonify({
+            'success': False, 
+            'error': f'Error al generar llaves: {str(e)}'
+        }), 500
 
 @app.route('/api/keys/download_private', methods=['GET'])
 @login_required
@@ -310,6 +395,50 @@ def get_team_keys():
         })
     
     return jsonify({'success': True, 'members': []})
+
+@app.route('/api/keys/diagnostic', methods=['GET'])
+@login_required
+def keys_diagnostic():
+    """Endpoint de diagnóstico para verificar estado de llaves"""
+    username = session['username']
+    team = session['current_team']
+    keys_dir = app.config['KEYS_FOLDER']
+    
+    # Verificar archivos individuales
+    private_key_path = os.path.join(keys_dir, f"private_key_{username}.pem")
+    public_key_path = os.path.join(keys_dir, f"public_key_{username}.pem")
+    team_keys_file = os.path.join(keys_dir, f"team_{team}_public_keys.json")
+    
+    diagnostic = {
+        'username': username,
+        'team': team,
+        'private_key_exists': os.path.exists(private_key_path),
+        'public_key_exists': os.path.exists(public_key_path),
+        'team_file_exists': os.path.exists(team_keys_file),
+        'team_members': [],
+        'in_team_file': False
+    }
+    
+    # Verificar contenido del archivo del equipo
+    if os.path.exists(team_keys_file):
+        try:
+            with open(team_keys_file, 'r') as f:
+                team_data = json.load(f)
+            diagnostic['team_members'] = list(team_data.get('team_public_keys', {}).keys())
+            diagnostic['in_team_file'] = username in team_data.get('team_public_keys', {})
+        except Exception as e:
+            diagnostic['team_file_error'] = str(e)
+    
+    # Intentar cargar llave privada
+    try:
+        instances = get_user_instances(username)
+        diagnostic['private_key_loaded'] = instances['key_gen'].private_key is not None
+        diagnostic['public_key_loaded'] = instances['key_gen'].public_key is not None
+        diagnostic['team_keys_loaded'] = len(instances['key_gen'].team_public_keys)
+    except Exception as e:
+        diagnostic['load_error'] = str(e)
+    
+    return jsonify(diagnostic)
 
 # ============= GESTIÓN DE DOCUMENTOS =============
 
@@ -571,24 +700,47 @@ def sign_document():
     
     instances = get_user_instances(session['username'])
     signer = instances['signer']
+    key_gen = instances['key_gen']
     
-    if not instances['key_gen'].private_key:
-        return jsonify({'success': False, 'error': 'Debe generar llaves primero'}), 400
+    # Verificar que la llave privada esté cargada
+    if not key_gen.private_key:
+        keys_dir = app.config['KEYS_FOLDER']
+        private_key_path = os.path.join(keys_dir, f"private_key_{session['username']}.pem")
+        
+        if not os.path.exists(private_key_path):
+            return jsonify({
+                'success': False, 
+                'error': 'Debes generar tus llaves primero. Ve a "Gestión de Llaves" y genera tu par de llaves RSA.'
+            }), 400
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Error cargando llave privada. Intenta generar nuevas llaves.'
+            }), 400
     
-    signature_package = signer.sign_document(filepath)
-    
-    # Guardar firma
-    sig_filename = f"firma_{session['username']}_{filename}.json"
-    sig_path = os.path.join(team_folder, sig_filename)
-    
-    with open(sig_path, 'w') as f:
-        json.dump(signature_package, f, indent=2)
-    
-    return jsonify({
-        'success': True,
-        'signature_file': sig_filename,
-        'document_hash': signature_package['document_hash']
-    })
+    try:
+        signature_package = signer.sign_document(filepath)
+        
+        # Guardar firma
+        sig_filename = f"firma_{session['username']}_{filename}.json"
+        sig_path = os.path.join(team_folder, sig_filename)
+        
+        with open(sig_path, 'w') as f:
+            json.dump(signature_package, f, indent=2)
+        
+        return jsonify({
+            'success': True,
+            'signature_file': sig_filename,
+            'document_hash': signature_package['document_hash']
+        })
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error firmando documento: {error_detail}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al firmar: {str(e)}'
+        }), 500
 
 @app.route('/api/verify/signature', methods=['POST'])
 @login_required
