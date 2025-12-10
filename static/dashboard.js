@@ -166,10 +166,16 @@ async function generateKeys() {
     
     if (data && data.success) {
         showAlert('✅ Llaves generadas exitosamente. Descarga tu llave privada ahora.', 'success');
-        loadUserInfo();
-        loadTeamKeys();
+        await loadUserInfo();
+        await loadTeamKeys();
+        
+        // Mostrar diagnóstico para verificar
+        setTimeout(async () => {
+            const diag = await fetchAPI('/api/keys/diagnostic');
+            console.log('Diagnóstico de llaves:', diag);
+        }, 500);
     } else {
-        showAlert('❌ Error al generar llaves', 'error');
+        showAlert('❌ Error al generar llaves: ' + (data?.error || 'Error desconocido'), 'error');
     }
 }
 
@@ -189,6 +195,42 @@ async function loadTeamKeys() {
         } else {
             keysList.innerHTML = '<li>No hay llaves públicas registradas</li>';
         }
+    }
+}
+
+async function showDiagnostic() {
+    const data = await fetchAPI('/api/keys/diagnostic');
+    
+    if (data) {
+        let message = `📊 DIAGNÓSTICO DE LLAVES\n\n`;
+        message += `Usuario: ${data.username}\n`;
+        message += `Equipo: ${data.team}\n\n`;
+        message += `✓ Archivos:\n`;
+        message += `  - Llave privada: ${data.private_key_exists ? '✅' : '❌'}\n`;
+        message += `  - Llave pública: ${data.public_key_exists ? '✅' : '❌'}\n`;
+        message += `  - Archivo del equipo: ${data.team_file_exists ? '✅' : '❌'}\n\n`;
+        message += `✓ Registro:\n`;
+        message += `  - En archivo del equipo: ${data.in_team_file ? '✅' : '❌'}\n`;
+        message += `  - Llave privada cargada: ${data.private_key_loaded ? '✅' : '❌'}\n`;
+        message += `  - Llave pública cargada: ${data.public_key_loaded ? '✅' : '❌'}\n\n`;
+        message += `✓ Equipo (${data.team_keys_loaded || 0} llaves cargadas):\n`;
+        if (data.team_members && data.team_members.length > 0) {
+            data.team_members.forEach(member => {
+                message += `  - ${member}\n`;
+            });
+        } else {
+            message += `  (ninguno)\n`;
+        }
+        
+        if (data.load_error) {
+            message += `\n❌ Error de carga: ${data.load_error}`;
+        }
+        if (data.team_file_error) {
+            message += `\n❌ Error en archivo del equipo: ${data.team_file_error}`;
+        }
+        
+        alert(message);
+        console.log('Diagnóstico completo:', data);
     }
 }
 
