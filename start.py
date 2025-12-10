@@ -152,18 +152,18 @@ def print_user_guide():
             ("Boloñesa", "avril789", "Abogado"),
             ("Ramírez", "mar789", "Cliente"),
             ("Hidalgo", "daniel789", "Cliente"),
-            ("Mejía", "avril123", "Notario")
+            ("admin", "admin", "Otro")
         ],
         "Divorcio": [
             ("Cruz", "daniel456", "Abogado"),
             ("Pérez", "mar456", "Cliente"),
             ("Perejil", "avril456", "Cliente"),
-            ("Estrada", "daniel123", "Notario")
+            ("admin", "admin", "Otro")
         ],
         "Asunto hipotecario": [
             ("Castro", "mar123", "Abogado"),
-            ("Pérez", "mar456", "Cliente"),
-            ("Estrada", "daniel123", "Notario")
+            ("Mejía", "avril123", "Cliente"),
+            ("Estrada", "daniel123", "Otro")
         ]
     }
     
